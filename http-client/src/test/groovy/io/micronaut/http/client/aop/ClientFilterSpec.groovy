@@ -17,6 +17,7 @@ package io.micronaut.http.client.aop
 
 import io.micronaut.context.ApplicationContext
 import io.micronaut.context.annotation.Requires
+import io.micronaut.http.HttpAttributes
 import io.micronaut.http.HttpResponse
 import io.micronaut.http.MediaType
 import io.micronaut.http.MutableHttpRequest
@@ -33,6 +34,8 @@ import org.reactivestreams.Publisher
 import spock.lang.AutoCleanup
 import spock.lang.Shared
 import spock.lang.Specification
+
+import javax.inject.Inject
 
 /**
  * @author graemerocher
@@ -94,6 +97,43 @@ class ClientFilterSpec extends Specification{
         ctx.close()
     }
 
+    void "test a low-level client has access to service id"() {
+        given:
+        ApplicationContext ctx = ApplicationContext.build([
+                'spec.name': 'ClientFilterSpec',
+                'micronaut.http.services.my-service.url': embeddedServer.getURL().toString()
+        ]).start()
+        RxHttpClient client = ctx.getBean(ServiceIdController).client
+
+        when:
+        HttpResponse<String> response = client.toBlocking().exchange("/", String.class)
+
+        then:
+        response.body() == 'id:my-service'
+
+        cleanup:
+        client.close()
+        ctx.close()
+    }
+
+    void "test a declarative client has access to service id"() {
+        given:
+        ApplicationContext ctx = ApplicationContext.build([
+                'spec.name': 'ClientFilterSpec',
+                'micronaut.http.services.my-service.url': embeddedServer.getURL().toString()
+        ]).start()
+        ServiceIdApi client = ctx.getBean(ServiceIdApi)
+
+        when:
+        String response = client.name()
+
+        then:
+        response == 'id:my-service'
+
+        cleanup:
+        ctx.close()
+    }
+
     @Requires(property = 'spec.name', value = "ClientFilterSpec")
     @Controller('/filters')
     static class TestController {
@@ -110,6 +150,19 @@ class ClientFilterSpec extends Specification{
 
         @Get
         String name(@Header('X-Root-Filter') String value) {
+            return value
+        }
+    }
+
+    @Requires(property = 'spec.name', value = "ClientFilterSpec")
+    @Controller('/service-id')
+    static class ServiceIdController {
+        @Inject
+        @Client(id = 'my-service', path = "/service-id")
+        RxHttpClient client;
+
+        @Get
+        String serviceId(@Header('X-Service-Filter') String value) {
             return value
         }
     }
@@ -134,6 +187,14 @@ class ClientFilterSpec extends Specification{
     static interface ServiceApi {
 
         @Get
+        String name()
+    }
+
+    @Requires(property = 'spec.name', value = "ClientFilterSpec")
+    @Client('my-service')
+    static interface ServiceIdApi {
+
+        @Get('/service-id')
         String name()
     }
 
@@ -191,6 +252,18 @@ class ClientFilterSpec extends Specification{
         @Override
         Publisher<? extends HttpResponse<?>> doFilter(MutableHttpRequest<?> request, ClientFilterChain chain) {
             request.header("X-Root-Filter", "processed")
+            return chain.proceed(request)
+        }
+    }
+
+    @Requires(property = 'spec.name', value = "ClientFilterSpec")
+    @Filter("/service-id")
+    static class ServiceFilter implements HttpClientFilter {
+
+        @Override
+        Publisher<? extends HttpResponse<?>> doFilter(MutableHttpRequest<?> request, ClientFilterChain chain) {
+            request.getAttribute(HttpAttributes.SERVICE_ID, String.class)
+                    .ifPresent({ serviceId -> request.header("X-Service-Filter", "id:" + serviceId) });
             return chain.proceed(request)
         }
     }
